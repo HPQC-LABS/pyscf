@@ -23,6 +23,9 @@ from pyscf.ao2mo import _ao2mo
 from pyscf.ao2mo import incore
 from pyscf import __config__
 
+import time
+import os
+
 IOBLK_SIZE = getattr(__config__, 'ao2mo_outcore_ioblk_size', 256)  # 256 MB
 IOBUF_WORDS = getattr(__config__, 'ao2mo_outcore_iobuf_words', 1e8)  # 800 MB
 IOBUF_ROW_MIN = getattr(__config__, 'ao2mo_outcore_row_min', 160)
@@ -114,7 +117,8 @@ def full(mol, mo_coeff, erifile, dataname='eri_mo',
 def general(mol, mo_coeffs, erifile, dataname='eri_mo',
             intor='int2e', aosym='s4', comp=None,
             max_memory=MAX_MEMORY, ioblk_size=IOBLK_SIZE, verbose=logger.WARN,
-            compact=True):
+            compact=True,
+            parallel_h5=True):
     r'''For the given four sets of orbitals, transfer arbitrary spherical AO
     integrals to MO integrals on the fly.
 
@@ -236,16 +240,61 @@ def general(mol, mo_coeffs, erifile, dataname='eri_mo',
 #    if nij_pair > nkl_pair:
 #        log.warn('low efficiency for AO to MO trans!')
 
-    if isinstance(erifile, str):
-        if h5py.is_hdf5(erifile):
-            feri = h5py.File(erifile, 'a')
-            if dataname in feri:
-                del (feri[dataname])
+    if parallel_h5 is True:
+        N_procs = 3
+
+        import sys
+
+        try:
+            from mpi4py import MPI
+        except ImportError as error:
+            print(error)
+        
+        print(os.getcwd())
+
+        def parallel_fun(data, row0, row1, data_name):
+            data_shape = data.shape
+            
+            comm = MPI.COMM_SELF.Spawn(
+                sys.executable,
+                args=['/Users/deyanmihaylov/Documents/Work/pyscf_devel/pyscf/ao2mo/h5_parallel_write.py'],
+                maxprocs=N_procs)
+
+            print(f"Size = {comm.Get_size()}")
+
+            # comm.Barrier()
+            t1 = MPI.Wtime()
+
+            comm.bcast(row0, root=MPI.ROOT)
+            comm.bcast(data_name, root=MPI.ROOT)
+            comm.bcast(data_shape, root=MPI.ROOT)
+            comm.Bcast([data, MPI.DOUBLE], root=MPI.ROOT)
+
+            f = h5py.File('parallel_test.h5', 'a', driver='mpio', comm=MPI.COMM_WORLD)
+
+            f.close()
+
+            # comm.Barrier()
+            t2 = MPI.Wtime()
+
+            # print(t2 - t1)
+
+    # if parallel_h5 is False:
+    t1 = time.process_time()
+
+    if parallel_h5 is False:
+        if isinstance(erifile, str):
+            if h5py.is_hdf5(erifile):
+                feri = h5py.File(erifile, 'a')
+                if dataname in feri:
+                    del (feri[dataname])
+            else:
+                feri = h5py.File(erifile, 'w')
         else:
-            feri = h5py.File(erifile, 'w')
-    else:
-        assert (isinstance(erifile, h5py.Group))
-        feri = erifile
+            assert (isinstance(erifile, h5py.Group))
+            feri = erifile
+
+    # print(feri)
 
     if comp == 1:
         chunks = (nmoj, nmol)
@@ -254,13 +303,16 @@ def general(mol, mo_coeffs, erifile, dataname='eri_mo',
         chunks = (1, nmoj, nmol)
         shape = (comp, nij_pair, nkl_pair)
 
-    if nij_pair == 0 or nkl_pair == 0:
-        feri.create_dataset(dataname, shape, 'f8')
-        if isinstance(erifile, str):
-            feri.close()
-        return erifile
-    else:
-        h5d_eri = feri.create_dataset(dataname, shape, 'f8', chunks=chunks)
+    # print(f"shape = {shape}")
+
+    if parallel_h5 is False:
+        if nij_pair == 0 or nkl_pair == 0:
+            feri.create_dataset(dataname, shape, 'f8')
+            if isinstance(erifile, str):
+                feri.close()
+            return erifile
+        else:
+            h5d_eri = feri.create_dataset(dataname, shape, 'f8', chunks=chunks)
 
     log.debug('MO integrals %s are saved in %s/%s', intor, erifile, dataname)
     log.debug('num. MO ints = %.8g, required disk %.8g MB',
@@ -285,13 +337,22 @@ def general(mol, mo_coeffs, erifile, dataname='eri_mo',
 
     def save(icomp, row0, row1, buf):
         if comp == 1:
-            h5d_eri[row0:row1] = buf[:row1-row0]
+            if parallel_h5 is False:
+                h5d_eri[row0:row1] = buf[:row1-row0]
+            else:
+                # h5d_eri[row0:row1] = buf[:row1-row0]
+                parallel_fun(buf[:row1-row0], row0, row1, dataname)
+                # print(f"buf_prefetch.shape = {buf_prefetch.shape}")
+
+            # print(f"nij_pair = {nij_pair}, iobuflen = {iobuflen}")
         else:
             h5d_eri[icomp,row0:row1] = buf[:row1-row0]
 
     ioblk_size = max(max_memory*.1, ioblk_size)
     iobuflen = guess_e2bufsize(ioblk_size, nij_pair, max(nao_pair,nkl_pair))[0]
-    buf = numpy.empty((iobuflen,nao_pair))
+    if parallel_h5 is True: iobuflen = iobuflen * N_procs
+    # print(f"iobuflen = {iobuflen}")
+    buf = numpy.empty((iobuflen,nao_pair)) 
     buf_prefetch = numpy.empty_like(buf)
     outbuf = numpy.empty((iobuflen,nkl_pair))
     buf_write = numpy.empty_like(outbuf)
@@ -305,33 +366,45 @@ def general(mol, mo_coeffs, erifile, dataname='eri_mo',
     ao_loc = mol.ao_loc_nr('_cart' in intor)
     ti0 = time_1pass
     istep = 0
+
     with lib.call_in_background(load) as prefetch:
         with lib.call_in_background(save) as async_write:
             _load_from_h5g(fswap['0'], 0, min(nij_pair, iobuflen), buf_prefetch)
 
             for row0, row1 in prange(0, nij_pair, iobuflen):
+                # print("row0, row1 = ", row0, row1)
                 nrow = row1 - row0
+                # print("nrow = ", nrow)
+                # print("comp = ", comp)
 
                 for icomp in range(comp):
                     istep += 1
-                    log.debug1('step 2 [%d/%d], [%d,%d:%d], row = %d',
-                               istep, ijmoblks, icomp, row0, row1, nrow)
+                    log.debug1(
+                        'step 2 [%d/%d], [%d,%d:%d], row = %d',
+                        istep, ijmoblks, icomp, row0, row1, nrow,
+                    )
 
                     buf, buf_prefetch = buf_prefetch, buf
                     prefetch(icomp, row0, row1, buf_prefetch)
                     _ao2mo.nr_e2(buf[:nrow], mokl, klshape, aosym, klmosym,
-                                 ao_loc=ao_loc, out=outbuf)
+                                ao_loc=ao_loc, out=outbuf)
+                    # print(icomp, row0, row1, outbuf.shape, outbuf)
+                    # print()
                     async_write(icomp, row0, row1, outbuf)
                     outbuf, buf_write = buf_write, outbuf  # avoid flushing writing buffer
 
                     ti1 = (logger.process_clock(), logger.perf_counter())
                     log.debug1('step 2 [%d/%d] CPU time: %9.2f, Wall time: %9.2f',
-                               istep, ijmoblks, ti1[0]-ti0[0], ti1[1]-ti0[1])
+                            istep, ijmoblks, ti1[0]-ti0[0], ti1[1]-ti0[1])
                     ti0 = ti1
 
     fswap = None
-    if isinstance(erifile, str):
+    if isinstance(erifile, str) and parallel_h5 is False:
         feri.close()
+
+    # if parallel_h5 is False:
+    t2 = time.process_time()
+    print(f"Time elapsed: {(t2 - t1)}")
 
     log.timer('AO->MO transformation for %s 2 pass'%intor, *time_1pass)
     log.timer('AO->MO transformation for %s '%intor, *time_0pass)
