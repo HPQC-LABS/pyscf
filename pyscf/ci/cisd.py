@@ -101,7 +101,7 @@ def make_diagonal(myci, eris):
     '''
     Return diagonal of CISD hamiltonian in Slater determinant basis.
 
-    Note that a constant has been substracted of all elements.
+    Note that a constant has been substracted from all elements.
     The first element is the HF energy (minus the
     constant), the next elements are the diagonal elements with singly
     excited determinants (<D_i^a|H|D_i^a> within the constant), then
