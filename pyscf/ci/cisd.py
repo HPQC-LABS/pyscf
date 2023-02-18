@@ -119,7 +119,7 @@ def make_diagonal(myci, eris):
             Diagonal elements of hamiltonian matrix within a constant,
             see above.
     '''
-    # DO NOT use eris.mo_energy, it may differ to eris.fock.diagonal()
+    # DO NOT use eris.mo_energy, it may differ from eris.fock.diagonal()
     mo_energy = eris.fock.diagonal()
     nmo = mo_energy.size
     jdiag = numpy.zeros((nmo,nmo))
@@ -881,7 +881,7 @@ class CISD(lib.StreamObject):
         self.chkfile = mf.chkfile
 
 ##################################################
-# don't modify the following attributes, they are not input options
+# don't modify the attributes in this section, they are not input options
         self.converged = False
         self.mo_coeff = mo_coeff
         self.mo_occ = mo_occ
@@ -895,6 +895,7 @@ class CISD(lib.StreamObject):
         keys = set(('conv_tol', 'max_cycle', 'max_space', 'lindep',
                     'level_shift', 'direct'))
         self._keys = set(self.__dict__.keys()).union(keys)
+##################################################
 
     def dump_flags(self, verbose=None):
         log = logger.new_logger(self, verbose)
