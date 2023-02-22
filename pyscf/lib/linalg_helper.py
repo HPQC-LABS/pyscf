@@ -411,7 +411,7 @@ def davidson1(aop, x0, precond, tol=1e-12, max_cycle=50, max_space=12,
     emin = None
     norm_min = 1
 
-    header = f"{'Message': >18}  iter  space  {'|r|': >8}  {'e': >34}  {'max|de|': >9}  lindep"
+    header = f"{'': >18}  iter  space  {'|r|': >8}  {'e': >34}  {'max|de|': >9}  lindep"
 
     for icyc in range(max_cycle):
         if fresh_start:
