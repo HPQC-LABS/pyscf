@@ -197,6 +197,13 @@ def _fill_heff(heff, xs, ax, xt, axt, dot):
         axi = xi = None
     return heff
 
+def _get_str(e):
+    if not isinstance(e, (list, numpy.ndarray)):
+        e = [e]
+
+    output = '[' + ' '.join([f"{x:+1.7f}" for x in e]) + ']'
+    return output
+
 def davidson(aop, x0, precond, tol=1e-12, max_cycle=50, max_space=12,
              lindep=DAVIDSON_LINDEP, max_memory=MAX_MEMORY,
              dot=numpy.dot, callback=None,
@@ -404,6 +411,8 @@ def davidson1(aop, x0, precond, tol=1e-12, max_cycle=50, max_space=12,
     emin = None
     norm_min = 1
 
+    header = f"{'Message': >18}  iter  space  {'|r|': >8}  {'e': >34}  {'max|de|': >9}  lindep"
+
     for icyc in range(max_cycle):
         if fresh_start:
             if _incore:
@@ -488,6 +497,8 @@ def davidson1(aop, x0, precond, tol=1e-12, max_cycle=50, max_space=12,
         else:
             ax0 = _gen_x0(v, ax)
 
+        if icyc == 0: log.debug(header)
+
         if SORT_EIG_BY_SIMILARITY:
             dx_norm = [0] * nroots
             xt = [None] * nroots
@@ -496,8 +507,9 @@ def davidson1(aop, x0, precond, tol=1e-12, max_cycle=50, max_space=12,
                     xt[k] = ax0[k] - ek * x0[k]
                     dx_norm[k] = numpy.sqrt(dot(xt[k].conj(), xt[k]).real)
                     if abs(de[k]) < tol and dx_norm[k] < toloose:
-                        log.debug('root %d converged  |r|= %4.3g  e= %s  max|de|= %4.3g',
-                                  k, dx_norm[k], ek, de[k])
+                        log.debug(
+                            f"{f'root {k} converged': <31}  {dx_norm[k]:.2e}  {_get_str(ek): <34}  {de[k]:+.2e}"
+                        )
                         conv[k] = True
         else:
             elast, conv_last = _sort_elast(elast, conv_last, vlast, v,
@@ -511,19 +523,22 @@ def davidson1(aop, x0, precond, tol=1e-12, max_cycle=50, max_space=12,
                 dx_norm.append(numpy.sqrt(dot(xt[k].conj(), xt[k]).real))
                 conv[k] = abs(de[k]) < tol and dx_norm[k] < toloose
                 if conv[k] and not conv_last[k]:
-                    log.debug('root %d converged  |r|= %4.3g  e= %s  max|de|= %4.3g',
-                              k, dx_norm[k], ek, de[k])
+                    log.debug(
+                        f"{f'root {k} converged': <31}  {dx_norm[k]:.2e}  {_get_str(ek): <34}  {de[k]:+.2e}"
+                    )
         ax0 = None
         max_dx_norm = max(dx_norm)
         ide = numpy.argmax(abs(de))
         if all(conv):
-            log.debug('converged %d %d  |r|= %4.3g  e= %s  max|de|= %4.3g',
-                      icyc, space, max_dx_norm, e, de[ide])
+            log.debug(
+                f"{f'converged': <18}  {icyc: >4}  {space: >5}  {max_dx_norm:.2e}  {_get_str(e): <34}  {de[ide]:+.2e}"
+            )
             break
         elif (follow_state and max_dx_norm > 1 and
               max_dx_norm/max_dx_last > 3 and space > nroots+2):
-            log.debug('davidson %d %d  |r|= %4.3g  e= %s  max|de|= %4.3g  lindep= %4.3g',
-                      icyc, space, max_dx_norm, e, de[ide], norm_min)
+            log.debug(
+                f"{f'davidson': <18}  {icyc: >4}  {space: >5}  {max_dx_norm:.2e}  {_get_str(e): <34}  {de[ide]:+.2e}  {f'{norm_min:1.2f}': >6}"
+            )
             log.debug('Large |r| detected, restore to previous x0')
             x0 = _gen_x0(vlast, xs)
             fresh_start = True
@@ -566,8 +581,9 @@ def davidson1(aop, x0, precond, tol=1e-12, max_cycle=50, max_space=12,
                 xt[i] = None
         xt = [xi for xi in xt if xi is not None]
         xi = None
-        log.debug('davidson %d %d  |r|= %4.3g  e= %s  max|de|= %4.3g  lindep= %4.3g',
-                  icyc, space, max_dx_norm, e, de[ide], norm_min)
+        log.debug(
+            f"{f'davidson': <18}  {icyc: >4}  {space: >5}  {max_dx_norm:.2e}  {_get_str(e): <34}  {de[ide]:+.2e}  {f'{norm_min:1.2f}': >6}"
+        )
         if len(xt) == 0:
             log.debug('Linear dependency in trial subspace. |r| for each state %s',
                       dx_norm)
