@@ -79,7 +79,6 @@ def write_head(fout, nmo, nelec, ms=0, orbsym=None):
 
 def write_eri(fout, eri, nmo, tol=TOL, float_format=DEFAULT_FLOAT_FORMAT):
     npair = nmo*(nmo+1)//2
-    output_format = float_format + ' %4d %4d %4d %4d\n'
     if eri.size == nmo**4:
         eri = ao2mo.restore(8, eri, nmo)
 
@@ -92,7 +91,10 @@ def write_eri(fout, eri, nmo, tol=TOL, float_format=DEFAULT_FLOAT_FORMAT):
                 for k in range(0, nmo):
                     for l in range(0, k+1):
                         if abs(eri[ij,kl]) > tol:
-                            fout.write(output_format % (eri[ij,kl], i+1, j+1, k+1, l+1))
+                            fout.write(
+                                f"{float_format % eri[ij,kl]} "
+                                f"{i+1:>4} {j+1:>4} {k+1:>4} {l+1:>4}\n"
+                            )
                         kl += 1
                 ij += 1
     else:  # 8-fold symmetry
@@ -106,24 +108,35 @@ def write_eri(fout, eri, nmo, tol=TOL, float_format=DEFAULT_FLOAT_FORMAT):
                     for l in range(0, k+1):
                         if ij >= kl:
                             if abs(eri[ijkl]) > tol:
-                                fout.write(output_format % (eri[ijkl], i+1, j+1, k+1, l+1))
+                                fout.write(
+                                    f"{float_format % eri[ijkl]} "
+                                    f"{i+1:>4} {j+1:>4} {k+1:>4} {l+1:>4}\n"
+                                )
                             ijkl += 1
                         kl += 1
                 ij += 1
 
 def write_hcore(fout, h, nmo, tol=TOL, float_format=DEFAULT_FLOAT_FORMAT):
     h = h.reshape(nmo,nmo)
-    output_format = float_format + ' %4d %4d  0  0\n'
     for i in range(nmo):
         for j in range(0, i+1):
             if abs(h[i,j]) > tol:
-                fout.write(output_format % (h[i,j], i+1, j+1))
+                fout.write(
+                    f"{float_format % h[i,j]} "
+                    f"{i+1:>4} {j+1:>4} {0:>4} {0:>4}\n"
+                )
 
 
-def from_chkfile(filename, chkfile, tol=TOL, float_format=DEFAULT_FLOAT_FORMAT,
-                 molpro_orbsym=MOLPRO_ORBSYM, orbsym=None):
+def from_chkfile(
+        filename,
+        chkfile,
+        tol=TOL,
+        float_format=DEFAULT_FLOAT_FORMAT,
+        molpro_orbsym=MOLPRO_ORBSYM,
+        orbsym=None,
+    ):
     '''Read SCF results from PySCF chkfile and transform 1-electron,
-    2-electron integrals using the SCF orbitals.  The transformed integrals is
+    2-electron integrals using the SCF orbitals. The transformed integrals is
     written to FCIDUMP
 
     Kwargs:
@@ -141,25 +154,57 @@ def from_chkfile(filename, chkfile, tol=TOL, float_format=DEFAULT_FLOAT_FORMAT,
         raise RuntimeError('Non-orthogonal orbitals found in chkfile')
 
     if mol.symmetry:
-        orbsym = symm.label_orb_symm(mol, mol.irrep_id,
-                                     mol.symm_orb, mo_coeff, check=False)
-    from_mo(mol, filename, mo_coeff, orbsym=orbsym, tol=tol,
-            float_format=float_format, molpro_orbsym=molpro_orbsym,
-            ms=mol.spin)
+        orbsym = symm.label_orb_symm(
+            mol,
+            mol.irrep_id,
+            mol.symm_orb,
+            mo_coeff,
+            check=False,
+        )
 
-def from_integrals(filename, h1e, h2e, nmo, nelec, nuc=0, ms=0, orbsym=None,
-                   tol=TOL, float_format=DEFAULT_FLOAT_FORMAT):
+    from_mo(
+        mol,
+        filename,
+        mo_coeff,
+        orbsym=orbsym,
+        tol=tol,
+        float_format=float_format,
+        molpro_orbsym=molpro_orbsym,
+        ms=mol.spin,
+    )
+
+def from_integrals(
+        filename: str,
+        h1e,
+        h2e,
+        nmo,
+        nelec,
+        nuc=0,
+        ms=0,
+        orbsym=None,
+        tol=TOL,
+        float_format=DEFAULT_FLOAT_FORMAT,
+    ) -> None:
     '''Convert the given 1-electron and 2-electron integrals to FCIDUMP format'''
+
     with open(filename, 'w') as fout:
         write_head(fout, nmo, nelec, ms, orbsym)
         write_eri(fout, h2e, nmo, tol=tol, float_format=float_format)
         write_hcore(fout, h1e, nmo, tol=tol, float_format=float_format)
-        output_format = float_format + '  0  0  0  0\n'
-        fout.write(output_format % nuc)
+        fout.write(
+            f"{float_format % nuc} {0:>4} {0:>4} {0:>4} {0:>4}\n"
+        )
 
-def from_mo(mol, filename, mo_coeff, orbsym=None,
-            tol=TOL, float_format=DEFAULT_FLOAT_FORMAT,
-            molpro_orbsym=MOLPRO_ORBSYM, ms=0):
+def from_mo(
+        mol,
+        filename,
+        mo_coeff,
+        orbsym=None,
+        tol=TOL,
+        float_format=DEFAULT_FLOAT_FORMAT,
+        molpro_orbsym=MOLPRO_ORBSYM,
+        ms=0,
+    ):
     '''Use the given MOs to transfrom the 1-electron and 2-electron integrals
     then dump them to FCIDUMP.
 
@@ -179,8 +224,18 @@ def from_mo(mol, filename, mo_coeff, orbsym=None,
     h1e = reduce(numpy.dot, (mo_coeff.T, h1ao, mo_coeff))
     eri = ao2mo.full(mol, mo_coeff, verbose=0)
     nuc = mol.energy_nuc()
-    from_integrals(filename, h1e, eri, h1e.shape[0], mol.nelec, nuc, ms, orbsym,
-                   tol, float_format)
+    from_integrals(
+        filename,
+        h1e,
+        eri,
+        h1e.shape[0],
+        mol.nelec,
+        nuc,
+        ms,
+        orbsym,
+        tol,
+        float_format,
+    )
 
 def from_scf(mf, filename, tol=TOL, float_format=DEFAULT_FLOAT_FORMAT,
              molpro_orbsym=MOLPRO_ORBSYM):
