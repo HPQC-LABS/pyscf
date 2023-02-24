@@ -414,6 +414,8 @@ def davidson1(aop, x0, precond, tol=1e-12, max_cycle=50, max_space=12,
     header = f"{'': >18}  iter  space  {'|r|': >8}  {'e': >34}  {'max|de|': >9}  lindep"
 
     for icyc in range(max_cycle):
+        numpy.save(f"civec_i{icyc}.npy", x0)
+
         if fresh_start:
             if _incore:
                 xs = []
