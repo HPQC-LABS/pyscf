@@ -299,7 +299,7 @@ def davidson1(aop, x0, precond, tol=1e-12, max_cycle=50, max_space=12,
               dot=numpy.dot, callback=None,
               nroots=1, lessio=False, pick=None, verbose=logger.WARN,
               follow_state=FOLLOW_STATE, tol_residual=None,
-              fill_heff=_fill_heff_hermitian):
+              fill_heff=_fill_heff_hermitian, ehf=0):
     r'''Davidson diagonalization method to solve  a c = e c.  Ref
     [1] E.R. Davidson, J. Comput. Phys. 17 (1), 87-94 (1975).
     [2] http://people.inf.ethz.ch/arbenz/ewp/Lnotes/chapter11.pdf
@@ -411,7 +411,7 @@ def davidson1(aop, x0, precond, tol=1e-12, max_cycle=50, max_space=12,
     emin = None
     norm_min = 1
 
-    header = f"{'': >18}  iter  space  {'|r|': >8}  {'e': >34}  {'max|de|': >9}  lindep"
+    header = f"{'': >18}  iter  space  {'|r|': >8}  {'e': >40}  {'max|de|': >9}  lindep"
 
     for icyc in range(max_cycle):
         numpy.save(f"civec_i{icyc}.npy", x0)
@@ -510,7 +510,8 @@ def davidson1(aop, x0, precond, tol=1e-12, max_cycle=50, max_space=12,
                     dx_norm[k] = numpy.sqrt(dot(xt[k].conj(), xt[k]).real)
                     if abs(de[k]) < tol and dx_norm[k] < toloose:
                         log.debug(
-                            f"{f'root {k} converged': <31}  {dx_norm[k]:.2e}  {_get_str(ek): <34}  {de[k]:+.2e}"
+                            f"{f'root {k} converged': <31}  {dx_norm[k]:.2e}  "
+                            f"{_get_str(ek + ehf): <40}  {de[k]:+.2e}"
                         )
                         conv[k] = True
         else:
@@ -526,20 +527,24 @@ def davidson1(aop, x0, precond, tol=1e-12, max_cycle=50, max_space=12,
                 conv[k] = abs(de[k]) < tol and dx_norm[k] < toloose
                 if conv[k] and not conv_last[k]:
                     log.debug(
-                        f"{f'root {k} converged': <31}  {dx_norm[k]:.2e}  {_get_str(ek): <34}  {de[k]:+.2e}"
+                        f"{f'root {k} converged': <31}  {dx_norm[k]:.2e}"
+                        f"  {_get_str(ek + ehf): <40}  {de[k]:+.2e}"
                     )
         ax0 = None
         max_dx_norm = max(dx_norm)
         ide = numpy.argmax(abs(de))
         if all(conv):
             log.debug(
-                f"{f'converged': <18}  {icyc: >4}  {space: >5}  {max_dx_norm:.2e}  {_get_str(e): <34}  {de[ide]:+.2e}"
+                f"{f'converged': <18}  {icyc: >4}  {space: >5}  "
+                f"{max_dx_norm:.2e}  {_get_str(e + ehf): <40}  {de[ide]:+.2e}"
             )
             break
         elif (follow_state and max_dx_norm > 1 and
               max_dx_norm/max_dx_last > 3 and space > nroots+2):
             log.debug(
-                f"{f'davidson': <18}  {icyc: >4}  {space: >5}  {max_dx_norm:.2e}  {_get_str(e): <34}  {de[ide]:+.2e}  {f'{norm_min:1.2f}': >6}"
+                f"{f'davidson': <18}  {icyc: >4}  {space: >5}  "
+                f"{max_dx_norm:.2e}  {_get_str(e + ehf): <40}  "
+                f"{de[ide]:+.2e}  {f'{norm_min:1.2f}': >6}"
             )
             log.debug('Large |r| detected, restore to previous x0')
             x0 = _gen_x0(vlast, xs)
@@ -584,7 +589,8 @@ def davidson1(aop, x0, precond, tol=1e-12, max_cycle=50, max_space=12,
         xt = [xi for xi in xt if xi is not None]
         xi = None
         log.debug(
-            f"{f'davidson': <18}  {icyc: >4}  {space: >5}  {max_dx_norm:.2e}  {_get_str(e): <34}  {de[ide]:+.2e}  {f'{norm_min:1.2f}': >6}"
+            f"{f'davidson': <18}  {icyc: >4}  {space: >5}  {max_dx_norm:.2e}  "
+            f"{_get_str(e + ehf): <40}  {de[ide]:+.2e}  {f'{norm_min:1.2f}': >6}"
         )
         if len(xt) == 0:
             log.debug('Linear dependency in trial subspace. |r| for each state %s',

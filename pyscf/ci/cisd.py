@@ -90,7 +90,8 @@ def kernel(myci, eris, ci0=None, max_cycle=50, tol=1e-8, verbose=logger.INFO):
     conv, ecisd, ci = lib.davidson1(op, ci0, precond, tol=tol,
                                     max_cycle=max_cycle, max_space=myci.max_space,
                                     lindep=myci.lindep, dot=cisd_dot,
-                                    nroots=myci.nroots, verbose=log)
+                                    nroots=myci.nroots, verbose=log,
+                                    ehf=ehf,)
     if myci.nroots == 1:
         conv = conv[0]
         ecisd = ecisd[0]
