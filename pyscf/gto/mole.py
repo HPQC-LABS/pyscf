@@ -2695,9 +2695,15 @@ class Mole(lib.StreamObject):
 
         self.stdout.write('System: %s  Threads %s\n' %
                           (str(platform.uname()), lib.num_threads()))
+        # import platform
+        self.stdout.write('%s %s\n' % (platform.system(), platform.release()))
         self.stdout.write('Python %s\n' % sys.version)
-        self.stdout.write('numpy %s  scipy %s\n' %
-                          (numpy.__version__, scipy.__version__))
+        self.stdout.write('numpy %s\n' % numpy.__version__)
+        self.stdout.write('scipy %s\n' % scipy.__version__)
+        self.stdout.write('h5py %s\n' % h5py.__version__)
+        self.stdout.write('MKL_NUM_THREADS = %s\n' % os.getenv('MKL_NUM_THREADS'))
+        self.stdout.write('NUMEXPR_NUM_THREADS = %s\n' % os.getenv('NUMEXPR_NUM_THREADS'))
+        self.stdout.write('OMP_NUM_THREADS = %s\n' % os.getenv('OMP_NUM_THREADS'))
         self.stdout.write('Date: %s\n' % time.ctime())
         import pyscf
         self.stdout.write('PySCF version %s\n' % pyscf.__version__)
