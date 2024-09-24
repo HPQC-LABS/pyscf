@@ -47,7 +47,7 @@ MUTE_CHKFILE = getattr(__config__, 'scf_hf_SCF_mute_chkfile', False)
 if sys.version_info >= (3,):
     unicode = str
 
-def kernel(mf, conv_tol=1e-10, conv_tol_grad=None,
+def kernel(mf, conv_tol=1e-10, conv_tol_grad=None, ddm_tol=1e-10,
            dump_chk=True, dm0=None, callback=None, conv_check=True, **kwargs):
     '''kernel: the SCF driver.
 
@@ -74,6 +74,8 @@ def kernel(mf, conv_tol=1e-10, conv_tol_grad=None,
             converge threshold.
         conv_tol_grad : float
             gradients converge threshold.
+        ddm_tol : float
+            convergence threshold for density matrix.
         dump_chk : bool
             Whether to save SCF intermediate results in the checkpoint file
         dm0 : ndarray
@@ -195,7 +197,7 @@ Keyword argument "init_dm" is replaced by "dm0"''')
 
         if callable(mf.check_convergence):
             scf_conv = mf.check_convergence(locals())
-        elif abs(e_tot-last_hf_e) < conv_tol and norm_gorb < conv_tol_grad:
+        elif abs(e_tot-last_hf_e) < conv_tol and norm_gorb < conv_tol_grad and norm_ddm < ddm_tol:
             scf_conv = True
 
         if dump_chk:
@@ -225,10 +227,11 @@ Keyword argument "init_dm" is replaced by "dm0"''')
         norm_ddm = numpy.linalg.norm(dm-dm_last)
 
         conv_tol = conv_tol * 10
+        ddm_tol = ddm_tol * 10
         conv_tol_grad = conv_tol_grad * 3
         if callable(mf.check_convergence):
             scf_conv = mf.check_convergence(locals())
-        elif abs(e_tot-last_hf_e) < conv_tol or norm_gorb < conv_tol_grad:
+        elif abs(e_tot-last_hf_e) < conv_tol or norm_gorb < conv_tol_grad or norm_ddm < ddm_tol:
             scf_conv = True
         logger.info(mf, 'Extra cycle  E= %.15g  delta_E= %4.3g  |g|= %4.3g  |ddm|= %4.3g',
                     e_tot, e_tot-last_hf_e, norm_gorb, norm_ddm)
@@ -1295,7 +1298,7 @@ def as_scanner(mf):
 
     The solver will automatically use the results of last calculation as the
     initial guess of the new calculation.  All parameters assigned in the
-    SCF object (DIIS, conv_tol, max_memory etc) are automatically applied in
+    SCF object (DIIS, conv_tol, ddm_tol, max_memory etc) are automatically applied in
     the solver.
 
     Note scanner has side effects.  It may change many underlying objects
@@ -1372,6 +1375,8 @@ class SCF(lib.StreamObject):
             converge threshold.  Default is 1e-9
         conv_tol_grad : float
             gradients converge threshold.  Default is sqrt(conv_tol)
+        ddm_tol : float
+            convergence threshold for density matrix. Default is 1e-10
         max_cycle : int
             max number of iterations.  If max_cycle <= 0, SCF iteration will
             be skiped and the kernel function will compute only the total
@@ -1436,6 +1441,7 @@ class SCF(lib.StreamObject):
     '''
     conv_tol = getattr(__config__, 'scf_hf_SCF_conv_tol', 1e-9)
     conv_tol_grad = getattr(__config__, 'scf_hf_SCF_conv_tol_grad', None)
+    ddm_tol = getattr(__config__, 'scf_hf_SCF_ddm_tol', 1e-10)
     max_cycle = getattr(__config__, 'scf_hf_SCF_max_cycle', 50)
     init_guess = getattr(__config__, 'scf_hf_SCF_init_guess', 'minao')
 
@@ -1487,7 +1493,7 @@ class SCF(lib.StreamObject):
         self.opt = None
         self._eri = None # Note: self._eri requires large amount of memory
 
-        keys = set(('conv_tol', 'conv_tol_grad', 'max_cycle', 'init_guess',
+        keys = set(('conv_tol', 'conv_tol_grad', 'ddm_tol', 'max_cycle', 'init_guess',
                     'DIIS', 'diis', 'diis_space', 'diis_start_cycle',
                     'diis_file', 'diis_space_rollback', 'damp', 'level_shift',
                     'direct_scf', 'direct_scf_tol', 'conv_check'))
@@ -1522,6 +1528,7 @@ class SCF(lib.StreamObject):
             log.info('diis_space = %d', self.diis_space)
         log.info('SCF conv_tol = %g', self.conv_tol)
         log.info('SCF conv_tol_grad = %s', self.conv_tol_grad)
+        log.info('SCF ddm_tol = %g', self.ddm_tol)
         log.info('SCF max_cycles = %d', self.max_cycle)
         log.info('direct_scf = %s', self.direct_scf)
         if self.direct_scf:
@@ -1683,14 +1690,14 @@ class SCF(lib.StreamObject):
             self.converged, self.e_tot, \
                     self.mo_energy, self.mo_coeff, self.mo_occ = \
                     kernel(self, self.conv_tol, self.conv_tol_grad,
-                           dm0=dm0, callback=self.callback,
+                           self.ddm_tol, dm0=dm0, callback=self.callback,
                            conv_check=self.conv_check, **kwargs)
         else:
             # Avoid to update SCF orbitals in the non-SCF initialization
             # (issue #495).  But run regular SCF for initial guess if SCF was
             # not initialized.
             self.e_tot = kernel(self, self.conv_tol, self.conv_tol_grad,
-                                dm0=dm0, callback=self.callback,
+                                self.ddm_tol, dm0=dm0, callback=self.callback,
                                 conv_check=self.conv_check, **kwargs)[1]
 
         logger.timer(self, 'SCF', *cput0)
