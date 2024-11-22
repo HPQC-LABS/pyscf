@@ -20,7 +20,6 @@
 Extension to numpy and scipy
 '''
 
-import string
 import ctypes
 import math
 import numpy
@@ -157,7 +156,7 @@ def _contract(subscripts, *tensors, **kwargs):
     idxBt = list(idxB)
     inner_shape = 1
     insert_B_loc = 0
-    shared_idxAB = sorted(list(shared_idxAB))
+    shared_idxAB = sorted(shared_idxAB)
     for n in shared_idxAB:
         if rangeA[n] != rangeB[n]:
             err = ('ERROR: In index string %s, the range of index %s is '
@@ -190,8 +189,8 @@ def _contract(subscripts, *tensors, **kwargs):
         print("Reshaping A as (-1,", inner_shape, ")")
         print("Reshaping B as (", inner_shape, ",-1)")
 
-    shapeCt = list()
-    idxCt = list()
+    shapeCt = []
+    idxCt = []
     for idx in idxAt:
         if idx in shared_idxAB:
             break
@@ -541,6 +540,39 @@ def takebak_2d(out, a, idx, idy, thread_safe=True):
        ctypes.c_int(thread_safe))
     return out
 
+
+def inplace_transpose_scale(a, alpha=1.0):
+    """In-place parallel scaling and transposition of a square matrix
+
+    Parameters
+    ----------
+    a : ndarray
+        Square matrix of size (n,n) to be scaled and transposed.
+        Does not need to be contiguous; lda can exceed n.
+    alpha : float, optional
+        scaling factor, by default 1.0
+    """
+    assert a.ndim == 2
+    assert a.shape[0] == a.shape[1]
+    n = a.shape[0]
+    astrides = [s // a.itemsize for s in a.strides]
+    lda = max(astrides)
+    assert min(astrides) == 1
+    if a.dtype == numpy.double:
+        _np_helper.NPomp_d_itranspose_scale(
+            ctypes.c_int(n), ctypes.c_double(alpha),
+            a.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(lda)
+        )
+    elif a.dtype == numpy.complex128:
+        alpha_arr = numpy.array([alpha], dtype=numpy.complex128)
+        _np_helper.NPomp_z_itranspose_scale(
+            ctypes.c_int(n), alpha_arr.ctypes.data_as(ctypes.c_void_p),
+            a.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(lda)
+        )
+    else:
+        raise NotImplementedError
+    return a
+
 def transpose(a, axes=None, inplace=False, out=None):
     '''Transposing an array with better memory efficiency
 
@@ -551,16 +583,45 @@ def transpose(a, axes=None, inplace=False, out=None):
      [ 1.  1.  1.]]
     '''
     if inplace:
-        arow, acol = a.shape[:2]
-        assert arow == acol
-        tmp = numpy.empty((BLOCK_DIM,BLOCK_DIM))
-        for c0, c1 in misc.prange(0, acol, BLOCK_DIM):
-            for r0, r1 in misc.prange(0, c0, BLOCK_DIM):
-                tmp[:c1-c0,:r1-r0] = a[c0:c1,r0:r1]
-                a[c0:c1,r0:r1] = a[r0:r1,c0:c1].T
-                a[r0:r1,c0:c1] = tmp[:c1-c0,:r1-r0].T
-            # diagonal blocks
-            a[c0:c1,c0:c1] = a[c0:c1,c0:c1].T
+        if a.ndim == 2:
+            inplace_transpose_scale(a)
+        elif a.ndim == 3 and axes == (0,2,1):
+            assert a.shape[1] == a.shape[2]
+            astrides = [a.strides[i]//a.itemsize for i in (1, 2)]
+            lda = max(astrides)
+            assert min(astrides) == 1
+            if a.dtype == numpy.double:
+                _np_helper.NPomp_dtensor_itranspose_scale021(
+                    ctypes.c_longlong(a.strides[0]//a.itemsize),
+                    ctypes.c_int(a.shape[0]),
+                    ctypes.c_int(a.shape[1]),
+                    ctypes.c_double(1.0),
+                    a.ctypes.data_as(ctypes.c_void_p),
+                    ctypes.c_int(lda)
+                )
+            elif a.dtype == numpy.complex128:
+                one_cplx = numpy.array([1.0], dtype=numpy.complex128)
+                _np_helper.NPomp_ztensor_itranspose_scale021(
+                    ctypes.c_longlong(a.strides[0]//a.itemsize),
+                    ctypes.c_int(a.shape[0]),
+                    ctypes.c_int(a.shape[1]),
+                    one_cplx.ctypes.data_as(ctypes.c_void_p),
+                    a.ctypes.data_as(ctypes.c_void_p),
+                    ctypes.c_int(lda)
+                )
+            else:
+                raise NotImplementedError
+        else:
+            arow, acol = a.shape[:2]
+            assert arow == acol
+            tmp = numpy.empty((BLOCK_DIM,BLOCK_DIM))
+            for c0, c1 in misc.prange(0, acol, BLOCK_DIM):
+                for r0, r1 in misc.prange(0, c0, BLOCK_DIM):
+                    tmp[:c1-c0,:r1-r0] = a[c0:c1,r0:r1]
+                    a[c0:c1,r0:r1] = a[r0:r1,c0:c1].T
+                    a[r0:r1,c0:c1] = tmp[:c1-c0,:r1-r0].T
+                # diagonal blocks
+                a[c0:c1,c0:c1] = a[c0:c1,c0:c1].T
         return a
 
     if (not a.flags.c_contiguous
@@ -1116,6 +1177,14 @@ def expm(a):
         y, buf = buf, y
     return y
 
+def ndarray_pointer_2d(array):
+    '''Return an array that contains the addresses of the first element in each
+    row of the input 2d array.
+    '''
+    assert array.ndim == 2
+    assert array.flags.c_contiguous
+    i = numpy.arange(array.shape[0])
+    return array.ctypes.data + (i * array.strides[0]).astype(numpy.uintp)
 
 class NPArrayWithTag(numpy.ndarray):
     # Initialize kwargs in function tag_array
@@ -1137,7 +1206,7 @@ class NPArrayWithTag(numpy.ndarray):
 
     # Whenever the contents of the array were modified (through ufunc), the tag
     # should be expired. Overwrite the output of ufunc to restore ndarray type.
-    def __array_wrap__(self, out, context=None):
+    def __array_wrap__(self, out, context=None, return_scalar=False):
         if out.ndim == 0:  # if ufunc returns a scalar
             return out[()]
         else:
@@ -1368,7 +1437,7 @@ def isin_1d(v, vs, return_index=False):
         v : array like
             The target vector. `v` is flattened.
         vs : array like
-            A list of vectors. The last dimenstion of `vs`
+            A list of vectors. The last dimension of `vs`
             should be the same as the size of `v`.
         return_index : bool
             Index of `v` in `vs`.

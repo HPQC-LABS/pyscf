@@ -18,7 +18,7 @@
 
 '''
 A low level interface to libcint library. It's recommended to use the
-Mole.intor method to drive the integral evaluation funcitons.
+Mole.intor method to drive the integral evaluation functions.
 '''
 
 import warnings
@@ -429,6 +429,7 @@ _INTOR_FUNCTIONS = {
     'int2c2e_ip1ip2'            : (9, 9),
     'int2c2e_ipip1'             : (9, 9),
     'int3c1e'                   : (1, 1),
+    'int3c1e_ip1'               : (3, 3),
     'int3c1e_p2'                : (1, 1),
     'int3c1e_iprinv'            : (3, 3),
     'int2c2e'                   : (1, 1),
@@ -593,7 +594,7 @@ def getints4c(intor_name, atm, bas, env, shls_slice=None, comp=1,
     if aosym == 's8':
         assert (shls_slice is None)
         from pyscf.scf import _vhf
-        nao = ao_loc[-1]
+        nao = int(ao_loc[-1])
         nao_pair = nao*(nao+1)//2
         out = numpy.ndarray((nao_pair*(nao_pair+1)//2), buffer=out)
         if nao_pair == 0:

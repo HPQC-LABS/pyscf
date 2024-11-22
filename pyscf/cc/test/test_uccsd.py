@@ -187,7 +187,7 @@ class KnownValues(unittest.TestCase):
         self.assertAlmostEqual(abs(t2[2]-myucc.t2[2]).max(), 0, 5)
 
     def test_uccsd_frozen(self):
-        ucc1 = copy.copy(myucc)
+        ucc1 = myucc.copy()
         ucc1.frozen = 1
         self.assertEqual(ucc1.nmo, (12,12))
         self.assertEqual(ucc1.nocc, (4,4))
@@ -727,6 +727,20 @@ class KnownValues(unittest.TestCase):
         self.assertAlmostEqual(abs(eri_incore.OVvo - eri_outcore.OVvo).max(), 0, 12)
         self.assertAlmostEqual(abs(eri_incore.OVvv - eri_outcore.OVvv).max(), 0, 12)
 
+    def test_damping(self):
+        mol = gto.M(
+            atom = 'H 0 0 0; F 0 0 1.1',  # in Angstrom
+            basis = 'ccpvdz',
+            spin=1,
+            charge=-1,
+            symmetry = True,
+            verbose = 0
+        )
+        mf = scf.UHF(mol).run()
+        mycc = cc.UCCSD(mf)
+        mycc.iterative_damping = 0.5
+        mycc.run()
+        self.assertAlmostEqual(mycc.e_tot, -100.07710261186985, 7)
 
 if __name__ == "__main__":
     print("Full Tests for UCCSD")

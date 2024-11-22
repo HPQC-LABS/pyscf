@@ -21,106 +21,116 @@ Spin-restricted random phase approximation (direct RPA/dRPA in chemistry)
 with N^4 scaling
 
 Method:
-    Main routines are based on GW-AC method descirbed in:
+    Main routines are based on GW-AC method described in:
     T. Zhu and G.K.-L. Chan, J. Chem. Theory. Comput. 17, 727-741 (2021)
     X. Ren et al., New J. Phys. 14, 053020 (2012)
 """
 
-import numpy as np
+import numpy as np, scipy
+
 from pyscf import lib
 from pyscf.lib import logger
 from pyscf.ao2mo import _ao2mo
 from pyscf import df, scf
-from pyscf.mp.mp2 import get_nocc, get_nmo, get_frozen_mask
+from pyscf.mp import dfmp2
 
 einsum = lib.einsum
 
 # ****************************************************************************
-# core routines, kernel, rpa_ecorr, rho_response
+# core routines kernel
 # ****************************************************************************
 
-def kernel(rpa, mo_energy, mo_coeff, Lpq=None, nw=40, x0=0.5, verbose=logger.NOTE):
-    """
+def kernel(rpa, eris=None, nw=40, x0=0.5, verbose=None):
+    '''
     RPA correlation and total energy
 
     Args:
-        Lpq : density fitting 3-center integral in MO basis.
-        nw : number of frequency point on imaginary axis.
-        x0: scaling factor for frequency grid.
+        cderi_ov:
+            Array-like object, Cholesky decomposed ERI in OV subspace.
+        nw:
+            number of frequency point on imaginary axis.
+        x0:
+            scaling factor for frequency grid.
 
     Returns:
-        e_tot : RPA total energy
-        e_hf : EXX energy
-        e_corr : RPA correlation energy
-    """
-    mf = rpa._scf
-    # only support frozen core
-    if rpa.frozen is not None:
-        assert isinstance(rpa.frozen, int)
-        assert rpa.frozen < rpa.nocc
+        e_tot:
+            RPA total energy
+        e_hf:
+            EXX energy
+        e_corr:
+            RPA correlation energy
+    '''
+    log = logger.new_logger(rpa, verbose)
 
-    if Lpq is None:
-        Lpq = rpa.ao2mo(mo_coeff)
+    if eris is None:
+        eris = rpa.ao2mo()
+    naux = eris.naux
 
-    # Grids for integration on imaginary axis
-    freqs, wts = _get_scaled_legendre_roots(nw, x0)
+    cput1 = (logger.process_clock(), logger.perf_counter())
 
-    # Compute HF exchange energy (EXX)
-    dm = mf.make_rdm1()
-    rhf = scf.RHF(rpa.mol)
-    e_hf = rhf.energy_elec(dm=dm)[0]
-    e_hf += mf.energy_nuc()
+    # Compute exact exchange energy (EXX)
+    e_hf = rpa.get_e_hf()
+
+    cput2 = cput1 = log.timer('EXX energy', *cput1)
 
     # Compute RPA correlation energy
-    e_corr = get_rpa_ecorr(rpa, Lpq, freqs, wts)
+    e_corr = 0
+    e_ov = rpa.make_e_ov()
+    f_ov = rpa.make_f_ov()
+    for igrid,(omega,weigh) in enumerate(zip(*_get_scaled_legendre_roots(nw, x0))):
+        diel = rpa.make_dielectric_matrix(omega, e_ov, f_ov, eris)
+        factor = weigh / (2.0 * np.pi)
+        e_corr += factor * np.log(np.linalg.det(np.eye(naux) - diel))
+        e_corr += factor * np.trace(diel)
+        diel = None
 
-    # Compute totol energy
-    e_tot = e_hf + e_corr
+        cput2 = log.timer_debug1('RPA corr grid %d/%d'%(igrid+1,nw), *cput2)
+    log.timer('RPA corr', *cput1)
 
-    logger.debug(rpa, '  RPA total energy = %s', e_tot)
-    logger.debug(rpa, '  EXX energy = %s, RPA corr energy = %s', e_hf, e_corr)
+    if abs(e_corr.imag) > 1e-4:
+        log.warn('Non-zero imaginary part found in %s energy %s', rpa.__class__.__name__, e_corr)
+    e_corr = e_corr.real
 
-    return e_tot, e_hf, e_corr
-
-def get_rpa_ecorr(rpa, Lpq, freqs, wts):
-    """
-    Compute RPA correlation energy
-    """
-    mo_energy = _mo_energy_without_core(rpa, rpa._scf.mo_energy)
-    nocc = rpa.nocc
-    nw = len(freqs)
-    naux = Lpq.shape[0]
-
-    if (mo_energy[nocc] - mo_energy[nocc-1]) < 1e-3:
-        logger.warn(rpa, 'Current RPA code not well-defined for degeneracy!')
-
-    e_corr = 0.
-    for w in range(nw):
-        Pi = get_rho_response(freqs[w], mo_energy, Lpq[:, :nocc, nocc:])
-        ec_w = np.log(np.linalg.det(np.eye(naux) - Pi))
-        ec_w += np.trace(Pi)
-        e_corr += 1./(2.*np.pi) * ec_w * wts[w]
-
-    return e_corr
-
-def get_rho_response(omega, mo_energy, Lpq):
-    """
-    Compute density response function in auxiliary basis at freq iw.
-    """
-    naux, nocc, nvir = Lpq.shape
-    eia = mo_energy[:nocc, None] - mo_energy[None, nocc:]
-    eia = eia / (omega**2 + eia * eia)
-    # Response from both spin-up and spin-down density
-    Pia = Lpq * (eia * 4.0)
-    Pi = einsum('Pia, Qia -> PQ', Pia, Lpq)
-    return Pi
+    return e_hf, e_corr
 
 # ****************************************************************************
 # frequency integral quadrature, legendre, clenshaw_curtis
 # ****************************************************************************
 
+def make_dielectric_matrix(omega, e_ov, f_ov, eris, blksize=None):
+    '''
+    Compute dielectric matrix at a given frequency omega
+
+    Args:
+        omega : float, frequency
+        e_ov : 1D array (nocc * nvir), orbital energy differences
+        eris : DF ERI object
+
+    Returns:
+        diel : 2D array (naux, naux), dielectric matrix
+    '''
+    assert blksize is not None
+
+    nocc, nvir, naux = eris.nocc, eris.nvir, eris.naux
+
+    isreal = eris.dtype == np.float64
+
+    chi0 = (2.0 * e_ov * f_ov / (omega ** 2 + e_ov ** 2)).ravel()
+    diel = np.zeros((naux, naux), dtype=eris.dtype)
+
+    for p0,p1 in lib.prange(0, nocc*nvir, blksize):
+        ovL = eris.get_ov_blk(p0,p1)
+        ovL_chi = (ovL.T * chi0[p0:p1]).T
+        if isreal:
+            lib.ddot(ovL_chi.T, ovL, c=diel, beta=1)
+        else:
+            lib.dot(ovL_chi.T, ovL.conj(), c=diel, beta=1)
+        ovL = ovL_chi = None
+
+    return diel
+
 def _get_scaled_legendre_roots(nw, x0=0.5):
-    """
+    '''
     Scale nw Legendre roots, which lie in the
     interval [-1, 1], so that they lie in [0, inf)
     Ref: www.cond-mat.de/events/correl19/manuscripts/ren.pdf
@@ -128,20 +138,21 @@ def _get_scaled_legendre_roots(nw, x0=0.5):
     Returns:
         freqs : 1D array
         wts : 1D array
-    """
+    '''
     freqs, wts = np.polynomial.legendre.leggauss(nw)
     freqs_new = x0 * (1.0 + freqs) / (1.0 - freqs)
     wts = wts * 2.0 * x0 / (1.0 - freqs)**2
     return freqs_new, wts
 
 def _get_clenshaw_curtis_roots(nw):
-    """
-    Clenshaw-Curtis qaudrature on [0,inf)
+    '''
+    Clenshaw-Curtis quadrature on [0,inf)
     Ref: J. Chem. Phys. 132, 234114 (2010)
+
     Returns:
         freqs : 1D array
         wts : 1D array
-    """
+    '''
     freqs = np.zeros(nw)
     wts = np.zeros(nw)
     a = 0.2
@@ -149,141 +160,164 @@ def _get_clenshaw_curtis_roots(nw):
         t = (w + 1.0) / nw * np.pi * 0.5
         freqs[w] = a / np.tan(t)
         if w != nw - 1:
-            wts[w] = a*np.pi * 0.5 / nw / (np.sin(t)**2)
+            wts[w] = a * np.pi * 0.50 / nw / (np.sin(t)**2)
         else:
-            wts[w] = a*np.pi * 0.25 / nw / (np.sin(t)**2)
+            wts[w] = a * np.pi * 0.25 / nw / (np.sin(t)**2)
     return freqs[::-1], wts[::-1]
 
-def _mo_energy_without_core(rpa, mo_energy):
-    return mo_energy[get_frozen_mask(rpa)]
 
-def _mo_without_core(rpa, mo):
-    return mo[:,get_frozen_mask(rpa)]
+class RPA(dfmp2.DFMP2):
 
-class RPA(lib.StreamObject):
+    _keys = {
+        'mol', 'frozen',
+        'with_df', 'mo_energy',
+        'mo_coeff', 'mo_occ',
+        'e_corr', 'e_hf', 'e_tot',
+    }
 
-    def __init__(self, mf, frozen=None, auxbasis=None):
-        self.mol = mf.mol
-        self._scf = mf
-        self.verbose = self.mol.verbose
-        self.stdout = self.mol.stdout
-        self.max_memory = mf.max_memory
-        self.frozen = frozen
-
-        # DF-RPA must use density fitting integrals
-        if getattr(mf, 'with_df', None):
-            self.with_df = mf.with_df
-        else:
-            self.with_df = df.DF(mf.mol)
-            if auxbasis:
-                self.with_df.auxbasis = auxbasis
-            else:
-                self.with_df.auxbasis = df.make_auxbasis(mf.mol, mp2fit=True)
-        self._keys.update(['with_df'])
-
-##################################################
-# don't modify the following attributes, they are not input options
-        self._nocc = None
-        self._nmo = None
-        self.mo_energy = mf.mo_energy
-        self.mo_coeff = mf.mo_coeff
-        self.mo_occ = mf.mo_occ
-        self.e_corr = None
-        self.e_hf = None
-        self.e_tot = None
-
-    def dump_flags(self):
-        log = logger.Logger(self.stdout, self.verbose)
+    def dump_flags(self, verbose=None):
+        log = logger.new_logger(self, verbose)
         log.info('')
         log.info('******** %s ********', self.__class__)
         log.info('method = %s', self.__class__.__name__)
-        nocc = self.nocc
-        nvir = self.nmo - nocc
-        log.info('RPA nocc = %d, nvir = %d', nocc, nvir)
+        log.info('nocc = %d  nmo = %d', self.nocc, self.nmo)
         if self.frozen is not None:
-            log.info('frozen orbitals = %d', self.frozen)
+            log.info('frozen orbitals = %s', self.frozen)
         return self
 
-    @property
-    def nocc(self):
-        return self.get_nocc()
-    @nocc.setter
-    def nocc(self, n):
-        self._nocc = n
+    def kernel(self, eris=None, nw=40, x0=0.5):
+        '''
+        The kernel function for direct RPA
+        '''
+        if np.iscomplexobj(self.mo_coeff):
+            ''' The code runs for complex-valued orbitals but the results ain't quite right
+                (very close though...). Throw an exception for now.
+            '''
+            raise NotImplementedError
 
-    @property
-    def nmo(self):
-        return self.get_nmo()
-    @nmo.setter
-    def nmo(self, n):
-        self._nmo = n
-
-    get_nocc = get_nocc
-    get_nmo = get_nmo
-    get_frozen_mask = get_frozen_mask
-
-    def kernel(self, mo_energy=None, mo_coeff=None, Lpq=None, nw=40, x0=0.5):
-        """
-        Args:
-            mo_energy : 1D array (nmo), mean-field mo energy
-            mo_coeff : 2D array (nmo, nmo), mean-field mo coefficient
-            Lpq : 3D array (naux, nmo, nmo), 3-index ERI
-            nw: interger, grid number
-            x0: real, scaling factor for frequency grid
-
-        Returns:
-            self.e_tot : RPA total eenrgy
-            self.e_hf : EXX energy
-            self.e_corr : RPA correlation energy
-        """
-        if mo_coeff is None:
-            mo_coeff = _mo_without_core(self, self._scf.mo_coeff)
-        if mo_energy is None:
-            mo_energy = _mo_energy_without_core(self, self._scf.mo_energy)
-
+        log = logger.new_logger(self)
         cput0 = (logger.process_clock(), logger.perf_counter())
-        self.dump_flags()
-        self.e_tot, self.e_hf, self.e_corr = \
-                        kernel(self, mo_energy, mo_coeff, Lpq=Lpq, nw=nw, x0=x0, verbose=self.verbose)
 
-        logger.timer(self, 'RPA', *cput0)
+        self.dump_flags()
+        res = kernel(
+            self, eris=eris, nw=nw, x0=x0, verbose=self.verbose)
+        self.e_hf, self.e_corr = res
+
+        log.timer(self.__class__.__name__, *cput0)
+
+        self._finalize()
+
         return self.e_corr
 
-    def ao2mo(self, mo_coeff=None):
-        if mo_coeff is None:
-            mo_coeff = self.mo_coeff
-        nmo = self.nmo
-        naux = self.with_df.get_naoaux()
-        mem_incore = (2 * nmo**2*naux) * 8 / 1e6
-        mem_now = lib.current_memory()[0]
+    def _finalize(self):
+        '''Hook for dumping results and clearing up the object.'''
+        log = logger.new_logger(self)
+        log.note('E(%s) = %.15g  E_corr = %.15g  E_hf = %.15g',
+                 self.__class__.__name__, self.e_tot, self.e_corr, self.e_hf)
 
-        mo = np.asarray(mo_coeff, order='F')
-        ijslice = (0, nmo, 0, nmo)
-        Lpq = None
-        if (mem_incore + mem_now < 0.99 * self.max_memory) or self.mol.incore_anyway:
-            Lpq = _ao2mo.nr_e2(self.with_df._cderi, mo, ijslice, aosym='s2', out=Lpq)
-            return Lpq.reshape(naux, nmo, nmo)
+    def get_e_hf(self):
+        if self.e_hf is None:
+            mf = self._scf
+            if isinstance(mf, scf.hf.KohnShamDFT):
+                mf = mf.to_hf()
+            if getattr(mf, 'with_df', None) is None:
+                mf = mf.density_fit(with_df=self.with_df)
+            dm = mf.make_rdm1()
+            self.e_hf = mf.energy_elec(dm=dm)[0] + mf.energy_nuc()
+        return self.e_hf
+
+    def make_e_ov(self):
+        '''
+        Compute orbital energy differences
+        '''
+        log = logger.new_logger(self)
+        moeocc, moevir = self.split_mo_energy()[1:3]
+        e_ov = (moeocc[:,None] - moevir).ravel()
+
+        gap = (-e_ov.max(), )
+        log.info('Lowest orbital energy difference: % 6.4e', np.min(gap))
+
+        if (np.min(gap) < 1e-3):
+            log.warn('RPA code is not well-defined for degenerate systems!')
+            log.warn('Lowest orbital energy difference: % 6.4e', np.min(gap))
+
+        return e_ov
+
+    def make_f_ov(self):
+        '''
+        Compute orbital occupation number differences
+        '''
+        focc, fvir = self.split_mo_occ()[1:3]
+        return (focc[:,None] - fvir).ravel()
+
+    def make_dielectric_matrix(self, omega, e_ov=None, f_ov=None, eris=None,
+                               max_memory=None, blksize=None):
+        '''
+        Args:
+            omega : float, frequency
+            e_ov : 1D array (nocc * nvir), orbital energy differences
+            mo_coeff :  (nao, nmo), mean-field mo coefficient
+            cderi_ov :  (naux, nocc, nvir), Cholesky decomposed ERI in OV subspace.
+
+        Returns:
+            diel : 2D array (naux, naux), dielectric matrix
+        '''
+        if e_ov is None: e_ov = self.make_e_ov()
+        if f_ov is None: f_ov = self.make_f_ov()
+        if eris is None: eris = self.ao2mo()
+        if max_memory is None: max_memory = self.max_memory
+
+        if blksize is None:
+            mem_avail = max_memory - lib.current_memory()[0]
+            nocc, nvir, naux = eris.nocc, eris.nvir, eris.naux
+            dsize = eris.dsize
+            mem_blk = 2*naux * dsize/1e6    # ovL and ovL*chi0
+            blksize = max(1, min(nocc*nvir, int(np.floor(mem_avail*0.7 / mem_blk))))
         else:
-            logger.warn(self, 'Memory may not be enough!')
-            raise NotImplementedError
+            blksize = min(blksize, e_ov.size)
+
+        diel = make_dielectric_matrix(omega, e_ov, f_ov, eris, blksize=blksize)
+
+        return diel
+
+
+dRPA = DirectRPA = RPA
+
 
 if __name__ == '__main__':
     from pyscf import gto, dft
     mol = gto.Mole()
-    mol.verbose = 4
     mol.atom = [
         [8 , (0. , 0.     , 0.)],
         [1 , (0. , -0.7571 , 0.5861)],
         [1 , (0. , 0.7571 , 0.5861)]]
-    mol.basis = 'def2-svp'
+    mol.basis = 'def2svp'
     mol.build()
+    mol.verbose = 4
 
     mf = dft.RKS(mol)
     mf.xc = 'pbe'
     mf.kernel()
 
     rpa = RPA(mf)
-    rpa.kernel()
-    print ('RPA e_tot, e_hf, e_corr = ', rpa.e_tot, rpa.e_hf, rpa.e_corr)
-    assert (abs(rpa.e_corr- -0.30783004035780076) < 1e-6)
-    assert (abs(rpa.e_tot- -76.26428191794182) < 1e-6)
+    rpa.verbose = 4
+
+    eris = rpa.ao2mo()
+    e_corr_0 = rpa.kernel(eris=eris)
+
+    assert (abs(rpa.e_corr - -0.307830040357800) < 1e-6)
+    assert (abs(rpa.e_tot  - -76.26651423730257) < 1e-6)
+
+    # Another implementation of direct RPA N^6
+    e_ov = -rpa.make_e_ov()
+    nov = e_ov.size
+    v_ov = np.asarray(eris.get_ov_blk(0,nov).T, order='C')
+    a = e_ov * np.eye(nov) + 2 * np.dot(v_ov.T, v_ov)
+    b = 2 * np.dot(v_ov.T, v_ov)
+    cmat = np.block([[a,b],[-b.conj(),-a.conj()]])
+    ev = scipy.linalg.eig(cmat)[0]
+    ev = ev.real
+    ev = ev[ev>0]
+    e_corr_1 = 0.5 * (np.sum(ev) - np.trace(a))
+
+    assert abs(e_corr_0 - e_corr_1) < 1e-8

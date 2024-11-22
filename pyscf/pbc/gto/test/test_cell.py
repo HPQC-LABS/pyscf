@@ -17,6 +17,7 @@
 #
 
 import unittest
+import tempfile
 import ctypes
 import numpy
 import numpy as np
@@ -25,6 +26,7 @@ from pyscf import lib
 from pyscf.pbc import gto as pgto
 from pyscf.pbc.gto import ecp
 from pyscf.pbc.tools import pbc as pbctools
+from pyscf.pbc.gto import ewald_methods
 
 
 def setUpModule():
@@ -84,6 +86,10 @@ class KnownValues(unittest.TestCase):
 
     def test_dumps_loads(self):
         cl1.loads(cl1.dumps())
+        # see issue 2026
+        from pyscf.pbc.tools.pbc import super_cell
+        sc = super_cell(cl1, [1,1,1])
+        sc.dumps()
 
     def test_get_lattice_Ls(self):
         #self.assertEqual(cl1.get_lattice_Ls([0,0,0]).shape, (1  , 3))
@@ -108,6 +114,20 @@ class KnownValues(unittest.TestCase):
         self.assertEqual(cell.get_lattice_Ls(rcut=rcut).shape, (1439, 3))
         #rcut = max([cell.bas_rcut(ib, 1e-9) for ib in range(cell.nbas)])
         #self.assertEqual(cell.get_lattice_Ls(rcut=rcut).shape, (1499, 3))
+
+    def test_fractional_coordinates(self):
+        cell = pgto.M(atom = '''
+        C 0 0 0
+        C .25 .25 .25''',
+        unit='B', basis = 'gth-dzvp', pseudo = 'gth-pade',
+        fractional=True,
+        a = '''
+        0.000000000  3.370137329  3.370137329
+        3.370137329  0.000000000  3.370137329
+        3.370137329  3.370137329  0.000000000''')
+        #[[0.         0.         0.        ]
+        #  [1.68506866 1.68506866 1.68506866]]
+        self.assertAlmostEqual(lib.fp(cell.atom_coords()), -2.2916494573514545, 14)
 
     def test_ewald(self):
         cell = pgto.Cell()
@@ -158,12 +178,12 @@ class KnownValues(unittest.TestCase):
 
         celldims = [2, 1, 1]
         scell = pbctools.super_cell(cell, celldims)
-        e_nuc_2 = scell.energy_nuc() / np.product(celldims)
+        e_nuc_2 = scell.energy_nuc() / np.prod(celldims)
         self.assertAlmostEqual(e_nuc_1, e_nuc_2, 8)
 
         celldims = [2, 2, 1]
         scell = pbctools.super_cell(cell, celldims)
-        e_nuc_2 = scell.energy_nuc() / np.product(celldims)
+        e_nuc_2 = scell.energy_nuc() / np.prod(celldims)
         self.assertAlmostEqual(e_nuc_1, e_nuc_2, 8)
 
     def test_ewald_2d_inf_vacuum(self):
@@ -172,7 +192,8 @@ class KnownValues(unittest.TestCase):
         cell.atom = 'He 0 0 0; He 0 1 1'
         cell.unit = 'B'
         cell.mesh = [9,9,60]
-        cell.verbose = 0
+        cell.verbose = 5
+        cell.output = '/dev/null'
         cell.dimension = 2
         cell.low_dim_ft_type = 'inf_vacuum'
         cell.rcut = 3.6
@@ -186,7 +207,8 @@ class KnownValues(unittest.TestCase):
         cell.atom = 'He 0 0 0; He 0 1 1'
         cell.unit = 'B'
         cell.mesh = [9,60,60]
-        cell.verbose = 0
+        cell.verbose = 5
+        cell.output = '/dev/null'
         cell.dimension = 1
         cell.low_dim_ft_type = 'inf_vacuum'
         cell.rcut = 3.6
@@ -199,7 +221,8 @@ class KnownValues(unittest.TestCase):
         cell.atom = 'He 0 0 0; He 0 1 1'
         cell.unit = 'B'
         cell.mesh = [60] * 3
-        cell.verbose = 0
+        cell.verbose = 5
+        cell.output = '/dev/null'
         cell.dimension = 0
         cell.low_dim_ft_type = 'inf_vacuum'
         cell.build()
@@ -212,7 +235,8 @@ class KnownValues(unittest.TestCase):
         cell.atom = 'He 0 0 0; He 0 1 1'
         cell.unit = 'B'
         cell.mesh = [9,9,60]
-        cell.verbose = 0
+        cell.verbose = 5
+        cell.output = '/dev/null'
         cell.dimension = 2
         cell.rcut = 3.6
         cell.build()
@@ -247,6 +271,30 @@ class KnownValues(unittest.TestCase):
 #        cell.build()
 #        eref = cell.to_mol().energy_nuc()
 #        self.assertAlmostEqual(cell.ewald(), eref, 2)
+
+    def test_particle_mesh_ewald(self):
+        cell = pgto.Cell()
+        cell.a = np.diag([10.,]*3)
+        cell.atom = '''
+            O          5.84560        5.21649        5.10372
+            H          6.30941        5.30070        5.92953
+            H          4.91429        5.26674        5.28886
+        '''
+        cell.pseudo = 'gth-pade'
+        cell.verbose = 0
+        cell.build()
+
+        cell1 = cell.copy()
+        cell1.use_particle_mesh_ewald = True
+        cell1.build()
+
+        e0 = cell.ewald()
+        e1 = cell1.ewald()
+        self.assertAlmostEqual(e0, e1, 6)
+
+        g0 = ewald_methods.ewald_nuc_grad(cell)
+        g1 = ewald_methods.ewald_nuc_grad(cell1)
+        self.assertAlmostEqual(abs(g1-g0).max(), 0, 6)
 
     def test_pbc_intor(self):
         numpy.random.seed(12)
@@ -297,6 +345,24 @@ class KnownValues(unittest.TestCase):
         v0 = mol.intor('ECPscalar_sph')
         self.assertAlmostEqual(abs(v0 - v1).max(), 0, 5)
         self.assertAlmostEqual(lib.fp(v1), -1.225444628445373, 8)
+
+        cell = pgto.M(a = '''0     2.445 2.445
+                     2.445 0     2.445
+                     2.445 2.445 0 ''',
+                     atom = 'U 0.0 0.0 0.0',
+                     basis = [[0, [.3, 1]], [2, [.2, 1]]],
+                     ecp = {'U': '''U nelec 60
+                            U S
+                            2   16.414038690   536.516627780
+                            U P
+                            2   9.060556060   169.544924650
+                            '''},
+                     precision = 1e-7,
+        )
+        nk = [4] * 3
+        kpts = cell.make_kpts(nk)
+        h1 = ecp.ecp_int(cell, kpts)
+        self.assertAlmostEqual(lib.fp(h1), 4.160881841456467, 7)
 
     def test_ecp_keyword_in_pseudo(self):
         cell = pgto.M(
@@ -466,6 +532,7 @@ class KnownValues(unittest.TestCase):
         self.assertTrue(len(cl3._ecpbas), 20)
         self.assertTrue(len(cl3._bas), 12)
         self.assertTrue(len(cl3._atm), 8)
+        self.assertAlmostEqual(abs(cl3.lattice_vectors() - cl1.lattice_vectors()).max(), 0, 12)
 
     def test_eval_gto(self):
         cell = pgto.M(a=np.eye(3)*4, atom='He 1 1 1', basis=[[2,(1,.5),(.5,.5)]], precision=1e-10)
@@ -477,6 +544,27 @@ class KnownValues(unittest.TestCase):
         coords = cell.get_uniform_grids([10]*3, wrap_around=False)
         ao_value = cell.pbc_eval_gto("GTOval_ip_cart", coords, kpts=cell.make_kpts([3]*3))
         self.assertAlmostEqual(lib.fp(ao_value), (0.38051517609460028+0.062526488684770759j), 9)
+
+    def test_empty_cell(self):
+        cell = pgto.M(a=np.eye(3)*4)
+        Ls = pbctools.get_lattice_Ls(cell)
+        self.assertEqual(abs(Ls-np.zeros([1,3])).max(), 0)
+
+    def test_fromstring(self):
+        ref = cl.atom_coords().copy()
+        cell = pgto.Cell()
+        cell.fromstring(cl.tostring('poscar'), 'vasp')
+        r0 = cell.atom_coords()
+        self.assertAlmostEqual(abs(ref - r0).max(), 0, 12)
+
+    def test_fromfile(self):
+        ref = cl.atom_coords().copy()
+        with tempfile.NamedTemporaryFile() as f:
+            cl.tofile(f.name, 'xyz')
+            cell = pgto.Cell()
+            cell.fromfile(f.name, 'xyz')
+            r1 = cell.atom_coords()
+            self.assertAlmostEqual(abs(ref - r1).max(), 0, 12)
 
 if __name__ == '__main__':
     print("Full Tests for pbc.gto.cell")

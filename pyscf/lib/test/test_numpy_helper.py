@@ -22,6 +22,30 @@ import itertools
 from pyscf import lib
 
 class KnownValues(unittest.TestCase):
+    def test_inplace_transpose_scale(self):
+        a = numpy.random.random((5,5))
+        acopy = a.copy()
+        with lib.with_omp_threads(4):
+            lib.transpose(a, inplace=True)
+        self.assertAlmostEqual(abs(a.T - acopy).max(), 0, 12)
+
+        a = numpy.random.random((405,405))-1j
+        acopy = a.copy()
+        lib.transpose(a, inplace=True)
+        self.assertAlmostEqual(abs(a.T - acopy).max(), 0, 12)
+        a[:] = acopy
+        lib.inplace_transpose_scale(a, 1.5)
+        self.assertAlmostEqual(abs(a.T - acopy*1.5).max(), 0, 12)
+        a = numpy.random.random((2, 405, 405))
+        acopy = a.copy()
+        with lib.with_omp_threads(1):
+            lib.transpose(a, axes=(0,2,1), inplace=True)
+        self.assertAlmostEqual(abs(a - acopy.transpose(0,2,1)).max(), 0, 12)
+        a[:] = acopy
+        with lib.with_omp_threads(4):
+            lib.transpose(a, axes=(0,2,1), inplace=True)
+        self.assertAlmostEqual(abs(a - acopy.transpose(0,2,1)).max(), 0, 12)
+
     def test_transpose(self):
         a = numpy.random.random((400,900))
         self.assertAlmostEqual(abs(a.T - lib.transpose(a)).max(), 0, 12)
@@ -224,6 +248,11 @@ class KnownValues(unittest.TestCase):
 
         self.assertRaises(ValueError, lib.split_reshape, numpy.arange(3), ((2,2),))
         self.assertRaises(ValueError, lib.split_reshape, numpy.arange(3), (2,2))
+
+    def test_ndarray_pointer_2d(self):
+        a = numpy.eye(3)
+        addr = lib.ndarray_pointer_2d(a)
+        self.assertTrue(all(addr == a.ctypes.data + numpy.array([0, 24, 48])))
 
 if __name__ == "__main__":
     print("Full Tests for numpy_helper")

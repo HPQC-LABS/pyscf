@@ -13,8 +13,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import copy
 import unittest
+import tempfile
 import numpy
 from pyscf import lib
 from pyscf import gto
@@ -47,6 +47,13 @@ def tearDownModule():
 
 
 class KnownValues(unittest.TestCase):
+    def test_ucasscf(self):
+        with tempfile.NamedTemporaryFile() as f:
+            mc = mcscf.UCASSCF(m, 4, 4)
+            mc.chkfile = f.name
+            mc.run()
+        self.assertAlmostEqual(mc.e_tot, -75.7460662487894, 6)
+
     def test_with_x2c_scanner(self):
         mc1 = mcscf.UCASSCF(m, 4, 4).x2c().run()
         self.assertAlmostEqual(mc1.e_tot, -75.795316854668201, 6)
@@ -96,7 +103,7 @@ class KnownValues(unittest.TestCase):
 
     def test_state_average_mix(self):
         mc = mcscf.UCASSCF(m, 5, (4, 2))
-        cis1 = copy.copy(mc.fcisolver)
+        cis1 = mc.fcisolver.copy()
         cis1.spin = 0
         mc = mcscf.addons.state_average_mix(mc, [cis1, mc.fcisolver], [0.5, 0.5])
         mc.kernel()

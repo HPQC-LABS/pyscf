@@ -41,8 +41,6 @@ class DFRMP2(lib.StreamObject):
             auxbasis : name of auxiliary basis set, otherwise determined automatically
         '''
 
-        if not isinstance(mf, scf.rhf.RHF):
-            raise TypeError('Class initialization with non-RHF object')
         self.mo_coeff = mf.mo_coeff
         self.mo_energy = mf.mo_energy
         self.nocc = np.count_nonzero(mf.mo_occ)
@@ -124,8 +122,15 @@ class DFRMP2(lib.StreamObject):
         '''
         Calculates the MP2 correlation energy.
         '''
+        logger = lib.logger
+        log = logger.new_logger(self)
+
+        cput0 = cput1 = (logger.process_clock(), logger.perf_counter())
+
         if not self.has_ints:
             self.calculate_integrals_()
+
+        cput1 = log.timer('ao2mo', *cput1)
 
         logger = lib.logger.new_logger(self)
         logger.info('')
@@ -133,6 +138,9 @@ class DFRMP2(lib.StreamObject):
         self.e_corr = emp2_rhf(self._intsfile, self.mo_energy, self.frozen_mask,
                                logger, ps=self.ps, pt=self.pt)
         logger.note('DF-MP2 correlation energy: {0:.14f}'.format(self.e_corr))
+        log.timer('kernel', *cput1)
+        log.timer(self.__class__.__name__, *cput0)
+
         return self.e_corr
 
     def make_rdm1(self, relaxed=False, ao_repr=False):
@@ -204,6 +212,8 @@ class DFRMP2(lib.StreamObject):
         '''
         Calculates the three center integrals for MP2.
         '''
+        if not isinstance(self._scf, scf.rhf.RHF):
+            raise TypeError('Class initialization with non-RHF object')
         Co = self.mo_coeff[:, self.occ_mask]
         Cv = self.mo_coeff[:, self.nocc:]
         logger = lib.logger.new_logger(self)
@@ -235,6 +245,8 @@ class DFRMP2(lib.StreamObject):
 
     def nuc_grad_method(self):
         raise NotImplementedError
+
+    to_gpu = lib.to_gpu
 
 
 MP2 = RMP2 = DFMP2 = DFRMP2
@@ -618,7 +630,7 @@ def shellBatchGenerator(mol, nao_max):
         if shell_stop == shell_start:
             raise BatchSizeError('empty batch')
         shell_range = (shell_start, shell_stop)
-        ao_range = (ao_loc[shell_start], ao_loc[shell_stop])
+        ao_range = (int(ao_loc[shell_start]), int(ao_loc[shell_stop]))
         yield shell_range, ao_range
         shell_start = shell_stop
 

@@ -24,7 +24,7 @@ libao2mo = lib.load_library('libao2mo')
 def _fpointer(name):
     return ctypes.c_void_p(_ctypes.dlsym(libao2mo._handle, name))
 
-class AO2MOpt(object):
+class AO2MOpt:
     def __init__(self, mol, intor, prescreen='CVHFnoscreen', qcondname=None):
         intor = ascint3(intor)
         self._this = ctypes.POINTER(_vhf._CVHFOpt)()
@@ -73,7 +73,7 @@ def nr_e1fill(intor, sh_range, atm, bas, env,
     natm = ctypes.c_int(c_atm.shape[0])
     nbas = ctypes.c_int(c_bas.shape[0])
     ao_loc = make_loc(bas, intor)
-    nao = ao_loc[-1]
+    nao = int(ao_loc[-1])
 
     klsh0, klsh1, nkl = sh_range
 
@@ -303,4 +303,3 @@ def r_e2(eri, mo_coeff, orbs_slice, tao, ao_loc, aosym='s1', out=None):
          (ctypes.c_int*4)(*orbs_slice),
          tao.ctypes.data_as(ctypes.c_void_p), c_ao_loc, c_nbas)
     return out
-
